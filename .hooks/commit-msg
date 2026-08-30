@@ -1,0 +1,63 @@
+#!/usr/bin/env node
+//@ts-check
+import { CommitParser } from 'conventional-commits-parser';
+import * as fs from 'node:fs';
+
+const ALLOWED_TYPES = [
+	'feat',
+	'fix',
+	'docs',
+	'style',
+	'refactor',
+	'perf',
+	'test',
+	'build',
+	'ci',
+	'chore',
+	'revert',
+];
+
+const commitMsgFile = process.argv[2];
+
+if (!commitMsgFile) {
+	console.error('commit-msg hook: No commit message file path provided');
+	process.exit(1);
+}
+
+const rawMessage = fs.readFileSync(commitMsgFile, 'utf8');
+
+// Strip comment lines
+const message = rawMessage
+	.split('\n')
+	.filter((line) => !line.startsWith('#'))
+	.join('\n')
+	.trim();
+
+if (!message) {
+	console.error('commit-msg hook: Empty commit message');
+	process.exit(1);
+}
+
+const parsed = new CommitParser().parse(message);
+
+if (!parsed.type) {
+	console.error(
+		`No release type found in commit message "${message}". Add a prefix to indicate what kind of commit this is. For reference, see https://www.conventionalcommits.org/\n\n` +
+		`Available types:\n${ALLOWED_TYPES
+			.map((type) => ` - ${type}`)
+			.join('\n')}`
+	);
+	process.exit(1);
+}
+
+if (!ALLOWED_TYPES.includes(parsed.type)) {
+	console.error(
+		`Unknown commit type found in commit message "${message}". Add a prefix to indicate what kind of commit this is. For reference, see https://www.conventionalcommits.org/\n\n` +
+		`Available types:\n${ALLOWED_TYPES
+			.map((type) => ` - ${type}`)
+			.join('\n')}`
+	);
+	process.exit(1);
+}
+
+process.exit(0);

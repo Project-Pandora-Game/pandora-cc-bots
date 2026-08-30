@@ -1,0 +1,11 @@
+/.idea
+/dist
+/data
+/logs
+/node_modules
+/coverage
+# SonarQube
+/.sonar
+/.scannerwork
+
+/.env

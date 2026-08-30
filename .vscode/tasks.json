@@ -1,0 +1,110 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "pnpm: install (CC Bots)",
+			"hide": true,
+			"type": "process",
+			"command": "pnpm",
+			"windows": {
+				"command": "pnpm.cmd"
+			},
+			"args": [
+				"install",
+				"--frozen-lockfile",
+				"--prefer-offline"
+			],
+			"options": {
+				"env": {
+					"COREPACK_ENABLE_DOWNLOAD_PROMPT": "0"
+				}
+			},
+			"presentation": {
+				"echo": true,
+				"reveal": "always",
+				"focus": false,
+				"panel": "shared",
+				"showReuseMessage": false,
+				"clear": false
+			},
+			"group": "none",
+			"problemMatcher": []
+		},
+		{
+			"label": "Setup CC Bots",
+			"runOptions": {
+				"runOn": "folderOpen"
+			},
+			"dependsOn": [
+				"pnpm: install (CC Bots)"
+			],
+			"dependsOrder": "sequence",
+			"type": "shell",
+			"command": "echo Done!",
+			"presentation": {
+				"echo": false,
+				"reveal": "always",
+				"focus": false,
+				"panel": "shared",
+				"showReuseMessage": true,
+				"close": true,
+				"clear": false
+			},
+			"group": "none",
+			"problemMatcher": []
+		},
+		{
+			"label": "Build CC Bots",
+			"type": "npm",
+			"script": "build",
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"problemMatcher": "$tsc"
+		},
+		{
+			"label": "Continuously Build CC Bots",
+			"type": "npm",
+			"script": "build:watch",
+			"isBackground": true,
+			"promptOnClose": true,
+			"presentation": {
+				"echo": true,
+				"reveal": "always",
+				"focus": false,
+				"panel": "dedicated",
+				"showReuseMessage": true,
+				"clear": true
+			},
+			"problemMatcher": {
+				"base": "$tsc",
+				"source": "tsc",
+				"fileLocation": [
+					"relative",
+					"${workspaceFolder}"
+				],
+				"background": {
+					"activeOnStart": true,
+					"beginsPattern": " File change detected\\. Starting incremental compilation\\.\\.\\.",
+					"endsPattern": " Watching for file changes\\."
+				}
+			}
+		},
+		{
+			"label": "Terminate All Tasks",
+			"command": "echo ${input:terminate}",
+			"type": "shell",
+			"hide": true,
+			"problemMatcher": []
+		}
+	],
+	"inputs": [
+		{
+			"id": "terminate",
+			"type": "command",
+			"command": "workbench.action.tasks.terminate",
+			"args": "terminateAll"
+		}
+	]
+}
