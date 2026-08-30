@@ -1,0 +1,10 @@
+#!/bin/bash
+
+set -eou pipefail
+source "./.hooks/include.sh"
+
+git --no-pager diff --check --cached
+if [ $? -ne 0 ]; then
+	echo "Error: whitespace errors detected. Fix them before committing."
+	exit 1
+fi

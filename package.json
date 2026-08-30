@@ -1,0 +1,63 @@
+{
+	"name": "pandora-cc-bots",
+	"author": {
+		"name": "Jomshir98",
+		"email": "jomshir98@protonmail.com"
+	},
+	"contributors": [
+		{
+			"name": "ClaudiaMia"
+		}
+	],
+	"version": "0.1.0",
+	"private": true,
+	"packageManager": "pnpm@11.22.0+sha512.1ff870c4c6133dfd88fb2afc46dd13d47f09c9794b438c6fdb47ca98caf3bc16381ee0be93a091b8e3824cf01f889f46d7d9e20910fb0be1ab0fb5baa80dd621",
+	"engines": {
+		"node": ">=24.x"
+	},
+	"repository": "git@github.com:Project-Pandora-Game/pandora-cc-bots.git",
+	"license": "UNLICENSED",
+	"type": "module",
+	"scripts": {
+		"postinstall": "node .hooks/postinstall.mjs",
+		"ci": "pnpm run build && pnpm run lint && pnpm run type-check:test && pnpm run test --ci",
+		"clean": "rimraf dist",
+		"build": "rimraf dist && tsc -p ./tsconfig.json",
+		"build:watch": "rimraf dist && tsc -p ./tsconfig.json --watch",
+		"dev": "rimraf dist && tsc-watch -p ./tsconfig.json --onSuccess \"node --enable-source-maps --env-file=.env ./dist/index.js\"",
+		"lint": "eslint --max-warnings 0 .",
+		"type-check": "pnpm run '/type-check:.*/'",
+		"type-check:test": "tsc -p ./test/tsconfig.json --noEmit",
+		"type-check:src": "tsc -p ./tsconfig.json --noEmit",
+		"test": "jest",
+		"test:coverage": "jest --coverage",
+		"test:watch": "jest --watch"
+	},
+	"dependencies": {
+		"immer": "11.1.17",
+		"lodash-es": "4.18.1",
+		"pandora-api": "github:Project-Pandora-Game/pandora#feature/bots&path:pandora-api",
+		"pandora-common": "github:Project-Pandora-Game/pandora#feature/bots&path:pandora-common",
+		"rimraf": "6.1.3",
+		"tslib": "2.8.1",
+		"wtfnode": "0.10.1",
+		"zod": "4.4.3"
+	},
+	"devDependencies": {
+		"@eslint/js": "9.39.5",
+		"@jest/globals": "30.4.1",
+		"@stylistic/eslint-plugin": "5.10.0",
+		"@types/lodash-es": "4.17.12",
+		"@types/node": "24.13.3",
+		"@types/wtfnode": "0.10.0",
+		"conventional-commits-parser": "7.1.2",
+		"discord-api-types": "0.38.53",
+		"eslint": "9.39.5",
+		"eslint-plugin-import": "2.32.0",
+		"jest": "30.4.2",
+		"ts-jest": "29.4.12",
+		"tsc-watch": "7.2.1",
+		"typescript": "6.0.3",
+		"typescript-eslint": "8.67.0"
+	}
+}

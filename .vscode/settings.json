@@ -1,0 +1,51 @@
+{
+	"debug.onTaskErrors": "showErrors",
+	"npm.packageManager": "pnpm",
+	"task.allowAutomaticTasks": "on",
+	"task.autoDetect": "off",
+	"editor.insertSpaces": false,
+	"files.insertFinalNewline": true,
+	"files.trimTrailingWhitespace": true,
+	"files.eol": "\n",
+	"files.encoding": "utf8",
+	"files.readonlyInclude": {
+		"node_modules/**": true,
+		"coverage/**": true,
+		"dist/**": true,
+	},
+	"git.rebaseWhenSync": true,
+	"[typescript]": {
+		"editor.defaultFormatter": "vscode.typescript-language-features",
+		"editor.formatOnSave": true
+	},
+	"js/ts.updateImportsOnFileMove.enabled": "always",
+	"js/ts.preferences.importModuleSpecifier": "relative",
+	"js/ts.preferences.importModuleSpecifierEnding": "js",
+	"js/ts.format.enabled": true,
+	"js/ts.format.semicolons": "insert",
+	"js/ts.format.insertSpaceAfterOpeningAndBeforeClosingJsxExpressionBraces": true,
+	"js/ts.preferences.preferTypeOnlyAutoImports": true,
+	"js/ts.preferences.quoteStyle": "single",
+	"editor.codeActionsOnSave": {
+		"source.fixAll.eslint": "explicit",
+		"source.organizeImports": "explicit",
+	},
+	"eslint.useESLintClass": true,
+	"eslint.useFlatConfig": true,
+	"eslint.problems.shortenToSingleLine": true,
+	"eslint.rules.customizations": [
+		{
+			"rule": "*",
+			"severity": "warn"
+		},
+		{
+			"rule": "*",
+			"fixable": true,
+			"severity": "info"
+		}
+	],
+	"jest.jestCommandLine": "./node_modules/jest/bin/jest.js",
+	"jest.nodeEnv": {
+		"NODE_OPTIONS": "--no-warnings=ExperimentalWarning --experimental-vm-modules"
+	},
+}

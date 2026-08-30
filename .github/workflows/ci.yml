@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  # Triggers the workflow on push but only for the master branch
+  push:
+    branches:
+      - main
+      - 'renovate/**'
+  # Triggers the workflow on any pull request
+  pull_request:
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: 24
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      - name: Update npm keys
+        run: |
+          echo COREPACK_INTEGRITY_KEYS="$(curl -s https://registry.npmjs.org/-/npm/v1/keys | jq -c '{npm: .keys}')" | tee -a "$GITHUB_ENV"
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      - name: Update npm keys
+        run: |
+          echo COREPACK_INTEGRITY_KEYS="$(curl -s https://registry.npmjs.org/-/npm/v1/keys | jq -c '{npm: .keys}')" | tee -a "$GITHUB_ENV"
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run lint
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      - name: Update npm keys
+        run: |
+          echo COREPACK_INTEGRITY_KEYS="$(curl -s https://registry.npmjs.org/-/npm/v1/keys | jq -c '{npm: .keys}')" | tee -a "$GITHUB_ENV"
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run type-check:test
+      - run: pnpm run test --ci --coverage

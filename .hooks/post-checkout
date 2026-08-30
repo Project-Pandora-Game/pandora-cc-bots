@@ -1,0 +1,14 @@
+#!/bin/bash
+
+set -eou pipefail
+source "./.hooks/include.sh"
+
+PREV_COMMIT=$1
+POST_COMMIT=$2
+
+if [ -f pnpm-lock.yaml ]; then
+	if [ "$PREV_COMMIT" = "0000000000000000000000000000000000000000" ] ||
+	   [ "$(git diff --shortstat $PREV_COMMIT..$POST_COMMIT pnpm-lock.yaml)" != "" ]; then
+		pnpm_helper
+	fi
+fi

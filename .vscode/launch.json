@@ -1,0 +1,18 @@
+{
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"name": "Run CC Bots",
+			"type": "node",
+			"request": "launch",
+			"program": "${workspaceFolder}/dist/index.js",
+			"skipFiles": [
+				"<node_internals>/**"
+			],
+			"sourceMaps": true,
+			"console": "integratedTerminal",
+			"envFile": "${workspaceFolder}/.env",
+			"preLaunchTask": "Continuously Build CC Bots"
+		},
+	]
+}

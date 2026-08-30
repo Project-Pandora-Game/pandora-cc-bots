@@ -1,0 +1,49 @@
+{
+	"$schema": "https://docs.renovatebot.com/renovate-schema.json",
+	"extends": [
+		"config:recommended",
+		":configMigration",
+		":disableDependencyDashboard",
+		":prHourlyLimitNone",
+		":rebaseStalePrs",
+		":automergeMinor"
+	],
+	"automergeType": "branch",
+	"autoApprove": true,
+	"automergeSchedule": [
+		"* 2-10 * * *"
+	],
+	"rangeStrategy": "pin",
+	"semanticCommits": "enabled",
+	"configMigration": true,
+	"labels": [
+		"Renovate"
+	],
+	"minimumReleaseAge": "7 days",
+	"packageRules": [
+		{
+			"matchDepTypes": [
+				"engines"
+			],
+			"enabled": false
+		},
+		{
+			"matchPackageNames": [
+				"node",
+				"docker.io/node",
+				"@types/node"
+			],
+			"allowedVersions": "^24.x"
+		},
+		{
+			"groupName": "all patched dependencies",
+			"groupSlug": "all-patch",
+			"matchUpdateTypes": [
+				"patch"
+			],
+			"matchPackageNames": [
+				"*"
+			]
+		}
+	]
+}
