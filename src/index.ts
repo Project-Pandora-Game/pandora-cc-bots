@@ -1,9 +1,11 @@
 import { mkdirSync } from 'fs';
+import { ConnectToPandoraApi } from 'pandora-api/api';
 import { GetLogger, LogLevel, SetConsoleOutput } from 'pandora-common';
+import { RunBots } from './botRunner.ts';
 import { ENV } from './config.ts';
 import { SetupSignalHandling } from './lifecycle.ts';
 import { AddDiscordLogOutput, AddFileOutput } from './logging.ts';
-const { LOG_DIR, LOG_DISCORD_WEBHOOK_URL, LOG_PRODUCTION } = ENV;
+const { LOG_DIR, LOG_DISCORD_WEBHOOK_URL, LOG_PRODUCTION, CC_BOTS_TOKEN, CC_BOTS_SERVER_ADDRESS } = ENV;
 
 {
 	const nodeLogger = GetLogger('Node');
@@ -25,7 +27,14 @@ Start().catch((error) => {
 async function Start(): Promise<void> {
 	SetupSignalHandling();
 	await SetupLogging();
-	logger.info(`Hello World!`);
+
+	const api = (await ConnectToPandoraApi({
+		token: CC_BOTS_TOKEN,
+		directoryConnectionAddress: CC_BOTS_SERVER_ADDRESS,
+	}))
+		.expect('Failed to connect to Pandora');
+
+	await RunBots(api);
 }
 
 /**

@@ -1,7 +1,11 @@
-import { CreateEnvParser } from 'pandora-common';
+import { CreateEnvParser, PandoraAccessTokenSchema } from 'pandora-common';
+import { BotIdSchema } from 'pandora-common/bots';
 import * as z from 'zod';
 
 export const EnvParser = CreateEnvParser({
+	CC_BOTS_TOKEN: PandoraAccessTokenSchema,
+	CC_BOTS_BOT_ID: BotIdSchema,
+	CC_BOTS_SERVER_ADDRESS: z.string(),
 
 	//#region Logging
 
