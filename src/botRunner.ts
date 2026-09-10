@@ -1,7 +1,7 @@
 import { PandoraApi } from 'pandora-api/api';
+import { BotConnection, SimpleBotOrchestrator } from 'pandora-api/bots';
 import { GetLogger } from 'pandora-common';
 import { ENV } from './config.ts';
-import { BotConnection, SimpleBotOrchestrator } from 'pandora-api/bots';
 const { CC_BOTS_BOT_ID } = ENV;
 
 export async function RunBots(api: PandoraApi): Promise<void> {
@@ -31,6 +31,104 @@ export async function RunBots(api: PandoraApi): Promise<void> {
 			logger.info('Space loaded successfully', bot, space);
 			logger.info('Characters: \n' + spaceState.characters.map((it) => `  - ${it.name} (${it.id})`).join('\n'));
 			logger.info('Space rooms: \n' + spaceState.globalState.space.rooms.map((it) => `  - ${it.name} (${it.id})`).join('\n'));
+
+			// Send some messages
+			(async () => {
+				(await botConnection.chatSender.sendMessage({
+					type: 'chat',
+					message: 'An example chat message',
+					as: {
+						id: 'bot',
+						name: 'Bot',
+						labelColor: '#00FFFF',
+					},
+				})).unwrap();
+
+				(await botConnection.chatSender.sendMessage({
+					type: 'chat',
+					message: 'I can whisper too! Even look like I am doing that from another room!',
+					as: {
+						id: 'bot',
+						name: 'Bot',
+						labelColor: '#00FFFF',
+					},
+					room: 'room:xMc_gVJXOg2_dMnNemOiO',
+					to: ['c1', 'c4'],
+				})).unwrap();
+
+				(await botConnection.chatSender.sendMessage({
+					type: 'ooc',
+					message: [['normal', 'An example '], ['bold', 'OOC message'], ['italic', ' with formatting']],
+					as: {
+						id: 'bot',
+						name: 'Bot with another name',
+						labelColor: '#FF0000',
+					},
+				})).unwrap();
+
+				// Link
+				(await botConnection.chatSender.sendMessage({
+					type: 'ooc',
+					message: 'https://project-pandora.com/',
+					as: {
+						id: 'bot',
+						name: 'Link Bot',
+						labelColor: '#d116c1',
+					},
+				})).unwrap();
+
+				(await botConnection.chatSender.sendMessage(
+					{
+						type: 'me',
+						message: 'waves',
+						as: {
+							id: 'bot',
+							name: 'Some NPC',
+							labelColor: '#FFFFFF',
+						},
+					},
+					{
+						type: 'emote',
+						message: 'But is nowhere to be seen',
+						as: {
+							id: 'bot',
+							name: 'Some NPC',
+							labelColor: '#FFFFFF',
+						},
+					},
+				)).unwrap();
+
+				const id1 = (await botConnection.chatSender.sendMessage(
+					{
+						type: 'ooc',
+						message: 'This message will be edited',
+						as: {
+							id: 'bot',
+							name: 'Bot',
+							labelColor: '#FFFFFF',
+						},
+					},
+				)).unwrap();
+
+				await new Promise((resolve) => setTimeout(resolve, 10_000));
+
+				const id2 = (await botConnection.chatSender.editMessage(id1,
+					{
+						type: 'ooc',
+						message: 'This message was edited and will be deleted',
+						as: {
+							id: 'bot',
+							name: 'Bot',
+							labelColor: '#FFFFFF',
+						},
+					},
+				)).unwrap();
+
+				await new Promise((resolve) => setTimeout(resolve, 10_000));
+
+				(await botConnection.chatSender.deleteMessage(id2)).unwrap();
+			})()
+				.catch((err) => logger.fatal('Error', err));
 		});
 
 		botConnection.updateConnectionInfo(connectionInfo);
