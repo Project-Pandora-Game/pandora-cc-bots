@@ -2,6 +2,7 @@ import { PandoraApi } from 'pandora-api/api';
 import { BotConnection, SimpleBotOrchestrator } from 'pandora-api/bots';
 import { GetLogger } from 'pandora-common';
 import { ENV } from './config.ts';
+import { EXAMPLE_COMMANDS } from './exampleCommands.ts';
 const { CC_BOTS_BOT_ID } = ENV;
 
 export async function RunBots(api: PandoraApi): Promise<void> {
@@ -16,7 +17,8 @@ export async function RunBots(api: PandoraApi): Promise<void> {
 	// Setup orchestrator responsible for spawning bot intstances
 	const orchestrator = new SimpleBotOrchestrator(api, CC_BOTS_BOT_ID, (bot, space, connectionInfo) => {
 		logger.info('Spawning new connection for bot and space', bot, space, connectionInfo);
-		const botConnection = new BotConnection(bot, space);
+		const botConnection = new BotConnection(bot, space)
+			.withCommandRouter(EXAMPLE_COMMANDS);
 
 		botConnection.on('connected', () => {
 			logger.info('Bot connected to space', bot, space);
