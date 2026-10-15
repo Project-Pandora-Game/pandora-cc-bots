@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 //@ts-check
+/// <reference types="@types/node" />
 /* Scripts are run in Node, so don't make use of the logger */
 import { spawnSync } from 'child_process';
 import { constants } from 'fs';
@@ -44,13 +45,25 @@ async function copyDotenv(basePath) {
  * @param {string} value
  */
 function setLocalGitConfig(config, value) {
-	const { stdout } = spawnSync('git', ['config', 'get', '--local', config]);
+	const { stdout, error: getError, signal: getSignal, status: getStatus } = spawnSync('git', ['config', 'get', '--local', config], { stdio: ['pipe', 'pipe', 'inherit'] });
 	const currentValue = stdout.toString().trim();
+
+	if (getError)
+		throw getError;
+	if (getSignal != null)
+		throw new Error(`Git config get failed with signal '${getSignal}'`);
+	if (getStatus == null || ![0, 1].includes(getStatus)) // 1 is returned when not set
+		throw new Error(`Git config get failed with status ${getStatus}`);
+
 	if (currentValue === value)
 		return;
 
 	console.log(`Updating Git config "${config}": "${currentValue}" -> "${value}"`);
-	const { error } = spawnSync('git', ['config', 'set', '--local', config, value]);
-	if (error)
-		throw error;
+	const { error: setError, signal: setSignal, status: setStatus } = spawnSync('git', ['config', 'set', '--local', config, value], { stdio: ['pipe', 'inherit', 'inherit'] });
+	if (setError)
+		throw setError;
+	if (setSignal != null)
+		throw new Error(`Git config get failed with signal '${setSignal}'`);
+	if (setStatus !== 0)
+		throw new Error(`Git config get failed with status ${setStatus}`);
 }
