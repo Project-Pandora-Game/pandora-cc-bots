@@ -4,10 +4,12 @@ import {
 	BotConnection,
 	CreateBotRepositoryCommand,
 	SimpleBotOrchestrator,
+	type BotSpaceCharacter,
 	type BotSpaceState,
 	type SimpleBotOrchestratorBotInstance,
 } from 'pandora-api/bots';
-import { CommandSelectorNumber, GetLogger, type CharacterId } from 'pandora-common';
+import { Assert, AssertNever, CommandSelectorNumber, GetLogger, type BotChatMessage, type CharacterId, type ChatMessageChatNPC, type SpaceId } from 'pandora-common';
+import type { BotId, BotShardConnectionInfo } from 'pandora-common/bots';
 import { ENV } from './config.ts';
 
 const { CC_BOTS_BOT_ID } = ENV;
@@ -30,10 +32,6 @@ function CleanText(text: string): string {
 	return text.replace(/\s+/g, ' ').trim();
 }
 
-function AssertNever(value: never): never {
-	throw new Error(`Unexpected value: ${String(value)}`);
-}
-
 // ---------------------------------------------------------------------------
 // Types & constants
 // ---------------------------------------------------------------------------
@@ -45,22 +43,12 @@ type GameState =
 	| 'waiting_on_tease_selection'
 	| 'waiting_on_reveal';
 
-interface Player {
-	readonly id: CharacterId;
-	readonly name: string;
-}
-
 interface Tease {
-	readonly player: Player;
+	readonly player: BotSpaceCharacter;
 	readonly text: string;
 }
 
-type ChatMessage = Parameters<BotConnection['chatSender']['sendMessage']>[0];
-type BotConnectionBot = ConstructorParameters<typeof BotConnection>[0];
-type BotConnectionSpace = ConstructorParameters<typeof BotConnection>[1];
-type BotConnectionInfo = Parameters<BotConnection['updateConnectionInfo']>[0];
-
-const BOT_IDENTITY = { id: 'bot', name: 'Game Mistress', labelColor: '#ce4676' } as const;
+const BOT_IDENTITY: ChatMessageChatNPC = { id: 'bot', name: 'Game Mistress', labelColor: '#ce4676' };
 
 /** Remaining seconds at which the timer is announced in chat (kept sparse to not be annoying) */
 const TIMER_ANNOUNCE_AT: readonly number[] = [60, 30, 10];
@@ -95,15 +83,11 @@ GAME COMMANDS
 Type an exclamation mark character '!' into the chat (without sending it) to see a list of all bot/game commands popping up. You can use tab-autocomplete as with normal commands.
 `.trim();
 
-function ToPlayer(c: { readonly id: CharacterId; readonly name: string; }): Player {
-	return { id: c.id, name: c.name };
-}
-
 // ---------------------------------------------------------------------------
 // Game logic (one instance per space; survives shard disconnects)
 // ---------------------------------------------------------------------------
 class IwouldnotmindGame {
-	private readonly players: Player[] = [];
+	private readonly players: BotSpaceCharacter[] = [];
 	/** ids of players that still need to submit a tease */
 	private readonly teasers = new Set<CharacterId>();
 	private activePlayerId: CharacterId | null = null;
@@ -115,10 +99,10 @@ class IwouldnotmindGame {
 	private readonly announced = new Set<number>();
 
 	/** Characters currently present in the space */
-	private present = new Map<CharacterId, Player>();
+	private present = new Map<CharacterId, BotSpaceCharacter>();
 
-	private readonly tickTimer: ReturnType<typeof setInterval>;
-	private readonly leaveTimers = new Map<CharacterId, ReturnType<typeof setTimeout>>();
+	private readonly tickTimer: NodeJS.Timeout;
+	private readonly leaveTimers = new Map<CharacterId, NodeJS.Timeout>();
 
 	/** Set on destroy; stops all further sending and long-running flows */
 	private destroyed = false;
@@ -148,13 +132,13 @@ class IwouldnotmindGame {
 
 	// ----- sending ---------------------------------------------------------
 
-	private send(message: ChatMessage): Promise<void> {
+	private send(message: BotChatMessage): Promise<void> {
 		const result = this.sendQueue.then(async () => {
 			if (this.destroyed) return;
 			try {
 				(await this.conn.chatSender.sendMessage(message)).unwrap();
 			} catch (err) {
-				logger.warning('Failed to send message', err);
+				logger.error('Failed to send message', err);
 			}
 		});
 		// Never rejects, errors are handled inside
@@ -168,8 +152,8 @@ class IwouldnotmindGame {
 	}
 
 	/** Private message to a single player */
-	private whisper(to: Player, message: string): Promise<void> {
-		return this.send({ type: 'chat', message, as: BOT_IDENTITY, to: [to.id] });
+	private whisper(to: BotSpaceCharacter, message: string): Promise<void> {
+		return this.send({ type: 'ooc', message, as: BOT_IDENTITY, to: [to.id] });
 	}
 
 	// ----- space events ----------------------------------------------------
@@ -179,7 +163,7 @@ class IwouldnotmindGame {
 	 * Registered players that are gone start their leave grace period,
 	 * registered players that are back have a pending grace period cancelled.
 	 */
-	public syncPresent(characters: readonly Player[]): void {
+	public syncPresent(characters: readonly BotSpaceCharacter[]): void {
 		const newPresent = new Map(characters.map((c) => [c.id, c] as const));
 
 		for (const p of this.players) {
@@ -200,7 +184,7 @@ class IwouldnotmindGame {
 		this.present = newPresent;
 	}
 
-	public async onCharacterJoined(character: Player): Promise<void> {
+	public onCharacterJoined(character: BotSpaceCharacter): void {
 		this.present.set(character.id, character);
 		const idx = this.players.findIndex((p) => p.id === character.id);
 		if (idx >= 0) {
@@ -208,12 +192,17 @@ class IwouldnotmindGame {
 			this.cancelLeaveTimer(character.id);
 			this.players[idx] = character;
 		} else {
-			await wait(2000);
-			// The character may have left (or the game been destroyed) in the meantime
-			if (this.destroyed || !this.present.has(character.id)) return;
-			void this.whisper(character,
-				`Welcome to 'I wouldn't mind', a kinky and fun multiplayer game. Use !manual to read the rules and !joingame to take part. ` +
-				`It is best played with four to five players, but can be started with three.`);
+			wait(2000)
+				.then(async () => {
+					// The character may have left (or the game been destroyed) in the meantime
+					if (this.destroyed || !this.present.has(character.id)) return;
+					await this.whisper(character,
+						`Welcome to 'I wouldn't mind', a kinky and fun multiplayer game. Use !manual to read the rules and !joingame to take part. ` +
+						`It is best played with four to five players, but can be started with three.`);
+				})
+				.catch((err) => {
+					logger.error('Error sending welcome message:', err);
+				});
 		}
 	}
 
@@ -241,11 +230,11 @@ class IwouldnotmindGame {
 
 	// ----- commands --------------------------------------------------------
 
-	public handleManual(sender: Player): void {
+	public handleManual(sender: BotSpaceCharacter): void {
 		void this.whisper(sender, MANUAL);
 	}
 
-	public handleStatus(sender: Player): void {
+	public handleStatus(sender: BotSpaceCharacter): void {
 		const active = this.getActive();
 		const next = this.players.length > 1 && active
 			? this.players[(this.players.findIndex((p) => p.id === active.id) + 1) % this.players.length]
@@ -260,7 +249,7 @@ class IwouldnotmindGame {
 				: ''));
 	}
 
-	public handleJoingame(sender: Player): void {
+	public handleJoingame(sender: BotSpaceCharacter): void {
 		if (this.players.some((p) => p.id === sender.id)) {
 			void this.whisper(sender, 'GAME: You are already registered as a player.');
 			return;
@@ -269,7 +258,7 @@ class IwouldnotmindGame {
 		void this.emote(`GAME: ${this.nameOf(sender)} was registered as an active player.`);
 	}
 
-	public handleNext(sender: Player): void {
+	public handleNext(sender: BotSpaceCharacter): void {
 		if (!this.players.some((p) => p.id === sender.id)) {
 			void this.whisper(sender, 'GAME: Please register first by using !joingame.');
 		} else if (this.gameState === 'game_not_started' || this.gameState === 'waiting_on_next_turn') {
@@ -286,7 +275,7 @@ class IwouldnotmindGame {
 		}
 	}
 
-	public handleStatement(sender: Player, rawText: string): void {
+	public handleStatement(sender: BotSpaceCharacter, rawText: string): void {
 		if (this.activePlayerId !== sender.id || this.gameState !== 'waiting_on_statement') {
 			void this.whisper(sender, 'GAME: It is currently not your turn to announce a statement.');
 			return;
@@ -308,7 +297,7 @@ class IwouldnotmindGame {
 		this.setGameState('waiting_on_teases');
 	}
 
-	public handleTease(sender: Player, rawText: string): void {
+	public handleTease(sender: BotSpaceCharacter, rawText: string): void {
 		if (this.gameState !== 'waiting_on_teases' || !this.teasers.has(sender.id)) {
 			void this.whisper(sender, 'GAME: You are currently not expected to submit a tease.');
 			return;
@@ -335,7 +324,7 @@ class IwouldnotmindGame {
 		this.tick();
 	}
 
-	public handlePick(choice: number, sender: Player): void {
+	public handlePick(choice: number, sender: BotSpaceCharacter): void {
 		if (this.activePlayerId !== sender.id || this.gameState !== 'waiting_on_tease_selection') {
 			void this.whisper(sender, 'GAME: You cannot pick a tease right now.');
 			return;
@@ -360,7 +349,7 @@ class IwouldnotmindGame {
 
 	// ----- internals -------------------------------------------------------
 
-	private async announceWinner(chooser: Player, picked: Tease): Promise<void> {
+	private async announceWinner(chooser: BotSpaceCharacter, picked: Tease): Promise<void> {
 		await this.emote(`GAME: ${this.nameOf(chooser)} chose:\n${picked.text}`);
 		await wait(3000);
 		await this.emote('This tease is by...');
@@ -376,16 +365,16 @@ class IwouldnotmindGame {
 	}
 
 	/** Name for printing into chat; appends the character id if another known character has the same name */
-	private nameOf(player: Player): string {
+	private nameOf(player: BotSpaceCharacter): string {
 		const name = player.name.toLowerCase();
 		const sameName = new Set<CharacterId>([player.id]);
 		for (const c of [...this.present.values(), ...this.players]) {
 			if (c.name.toLowerCase() === name) sameName.add(c.id);
 		}
-		return sameName.size > 1 ? `${player.name} [${player.id}]` : player.name;
+		return sameName.size > 1 ? `${player.name} (${player.id})` : player.name;
 	}
 
-	private getActive(): Player | null {
+	private getActive(): BotSpaceCharacter | null {
 		return this.players.find((p) => p.id === this.activePlayerId) ?? null;
 	}
 
@@ -393,14 +382,14 @@ class IwouldnotmindGame {
 		return this.players.filter((p) => this.teasers.has(p.id)).map((p) => this.nameOf(p));
 	}
 
-	private determineNextPlayer(): Player {
+	private determineNextPlayer(): BotSpaceCharacter {
 		const idx = this.players.findIndex((p) => p.id === this.activePlayerId);
 		const next = this.players[idx < 0 ? 0 : (idx + 1) % this.players.length];
 		this.activePlayerId = next.id;
 		return next;
 	}
 
-	private unregisterPlayer(character: Player, message: string): void {
+	private unregisterPlayer(character: BotSpaceCharacter, message: string): void {
 		const index = this.players.findIndex((p) => p.id === character.id);
 		if (index >= 0) {
 			// Name is computed before the splice, so duplicates among the registered players are still detected
@@ -533,16 +522,16 @@ class IwouldnotmindGame {
 // ---------------------------------------------------------------------------
 function CreateCommands(game: IwouldnotmindGame): BotCommandRepository {
 	/** Command without arguments, forwarded to the game together with the sending player */
-	const simpleCommand = (run: (sender: Player) => void) =>
+	const simpleCommand = (run: (sender: BotSpaceCharacter) => void) =>
 		CreateBotRepositoryCommand().handler(({ character }): boolean => {
-			run(ToPlayer(character));
+			run(character);
 			return true;
 		});
 
 	/** Command taking the rest of the line as free text */
-	const textCommand = (run: (sender: Player, text: string) => void) =>
+	const textCommand = (run: (sender: BotSpaceCharacter, text: string) => void) =>
 		CreateBotRepositoryCommand().handler({ restArgName: 'text' }, ({ character }, _args, text): boolean => {
-			run(ToPlayer(character), text);
+			run(character, text);
 			return true;
 		});
 
@@ -586,7 +575,7 @@ function CreateCommands(game: IwouldnotmindGame): BotCommandRepository {
 			handler: CreateBotRepositoryCommand()
 				.argument('choice', CommandSelectorNumber({ min: 1, max: 50 }))
 				.handler(({ character }, { choice }): boolean => {
-					game.handlePick(choice, ToPlayer(character));
+					game.handlePick(choice, character);
 					return true;
 				}),
 		});
@@ -601,7 +590,7 @@ class IwouldnotmindBotInstance implements SimpleBotOrchestratorBotInstance {
 	/** The space state listeners are currently bound to; a new object (after a reload) needs new listeners */
 	private boundState: BotSpaceState | null = null;
 
-	constructor(bot: BotConnectionBot, space: BotConnectionSpace, connectionInfo: BotConnectionInfo) {
+	constructor(bot: BotId, space: SpaceId, connectionInfo: BotShardConnectionInfo) {
 		this.botConnection = new BotConnection(bot, space);
 		this.game = new IwouldnotmindGame(this.botConnection);
 
@@ -614,11 +603,12 @@ class IwouldnotmindBotInstance implements SimpleBotOrchestratorBotInstance {
 		this.botConnection.on('loaded', (spaceState) => {
 			logger.info('Space loaded successfully', bot, space);
 			// Runs on every (re)load: resync presence, so leaves and returns during a disconnect are handled
-			this.game.syncPresent(spaceState.characters.map(ToPlayer));
+			this.game.syncPresent(spaceState.characters);
 
 			if (this.boundState !== spaceState) {
+				Assert(this.boundState == null);
 				this.boundState = spaceState;
-				spaceState.on('characterJoined', (c) => void this.game.onCharacterJoined(ToPlayer(c)));
+				spaceState.on('characterJoined', (c) => this.game.onCharacterJoined(c));
 				spaceState.on('characterLeft', (id) => this.game.onCharacterLeft(id));
 			}
 		});
@@ -631,7 +621,7 @@ class IwouldnotmindBotInstance implements SimpleBotOrchestratorBotInstance {
 		this.botConnection.disconnect();
 	}
 
-	public updateConnectionInfo(newConnectionInfo: BotConnectionInfo): void {
+	public updateConnectionInfo(newConnectionInfo: BotShardConnectionInfo): void {
 		this.botConnection.updateConnectionInfo(newConnectionInfo);
 	}
 }
