@@ -53,9 +53,6 @@ const BOT_IDENTITY: ChatMessageChatNPC = { id: 'bot', name: 'Game Mistress', lab
 /** Remaining seconds at which the timer is announced in chat (kept sparse to not be annoying) */
 const TIMER_ANNOUNCE_AT: readonly number[] = [60, 30, 10];
 
-/** Grace period before a character that left the space is unregistered */
-const LEAVE_GRACE_MS = 60_000;
-
 const MANUAL = `
 I WOULDN'T MIND
 a game by Lily, implementation by Claudia & Clare
@@ -83,10 +80,17 @@ GAME COMMANDS
 Type an exclamation mark character '!' into the chat (without sending it) to see a list of all bot/game commands popping up. You can use tab-autocomplete as with normal commands.
 `.trim();
 
+const WELCOME_MESSAGE =
+	`Welcome to 'I wouldn't mind', a kinky and fun multiplayer game. Use !manual to read the rules and !joingame to take part. ` +
+	`It is best played with four to five players, but can be started with three.`;
+
 // ---------------------------------------------------------------------------
 // Game logic (one instance per space; survives shard disconnects)
 // ---------------------------------------------------------------------------
 class IwouldnotmindGame {
+	/** The commands of this game; handlers are closures created in the constructor */
+	public readonly commands: BotCommandRepository;
+
 	private readonly players: BotSpaceCharacter[] = [];
 	/** ids of players that still need to submit a tease */
 	private readonly teasers = new Set<CharacterId>();
@@ -102,7 +106,6 @@ class IwouldnotmindGame {
 	private present = new Map<CharacterId, BotSpaceCharacter>();
 
 	private readonly tickTimer: NodeJS.Timeout;
-	private readonly leaveTimers = new Map<CharacterId, NodeJS.Timeout>();
 
 	/** Set on destroy; stops all further sending and long-running flows */
 	private destroyed = false;
@@ -121,13 +124,176 @@ class IwouldnotmindGame {
 			}
 		}, 1000);
 		this.setGameState('game_not_started');
+
+		// Return value convention for all commands:
+		//   true  = the command took effect (or there is nothing the user could fix), input is cleared
+		//   false = the user should modify the command or retry later, input is kept
+		this.commands = new BotCommandRepository()
+			.registerCommand({
+				key: 'manual',
+				description: 'Show the manual of the game',
+				handler: CreateBotRepositoryCommand().handler(({ character }): boolean => {
+					void this.whisper(character, MANUAL);
+					return true;
+				}),
+			})
+			.registerCommand({
+				key: 'status',
+				description: 'Get information about the running game',
+				handler: CreateBotRepositoryCommand().handler(({ character }): boolean => {
+					const active = this.getActive();
+					const next = this.players.length > 1 && active
+						? this.players[(this.players.findIndex((p) => p.id === active.id) + 1) % this.players.length]
+						: null;
+					void this.whisper(character, `This is the current status of the game:\n` +
+						`The game has the following registered players:\n` +
+						(this.players.map((p) => this.nameOf(p)).join(', ') || 'none') +
+						`\nThe player at turn is: ${active ? this.nameOf(active) : 'none'}\n` +
+						`The player next turn will be: ${next ? this.nameOf(next) : 'none'}` +
+						(this.gameState === 'waiting_on_teases'
+							? `\nThe following players still need to submit a tease for ${active ? this.nameOf(active) : 'none'}:\n${this.teaserNames().join(', ')}`
+							: ''));
+					return true;
+				}),
+			})
+			.registerCommand({
+				key: 'joingame',
+				description: 'Register as a new player',
+				handler: CreateBotRepositoryCommand().handler(({ character }): boolean => {
+					if (this.players.some((p) => p.id === character.id)) {
+						void this.whisper(character, 'GAME: You are already registered as a player.');
+						return true;
+					}
+					this.players.push(character);
+					void this.emote(`GAME: ${this.nameOf(character)} was registered as an active player.`);
+					return true;
+				}),
+			})
+			.registerCommand({
+				key: 'next',
+				description: 'Start a new round after registering (needs 3+ players)',
+				handler: CreateBotRepositoryCommand().handler(({ character }): boolean => {
+					if (!this.players.some((p) => p.id === character.id)) {
+						void this.whisper(character, 'GAME: Please register first by using !joingame.');
+						return false;
+					}
+					if (this.gameState !== 'game_not_started' && this.gameState !== 'waiting_on_next_turn') {
+						void this.whisper(character, 'GAME: A round is currently already in progress. You will be part of the next round.');
+						return false;
+					}
+
+					// Players that went offline are removed right when a round starts
+					for (const player of [...this.players]) {
+						if (player.data.onlineStatus === 'offline') {
+							this.unregisterPlayer(player, ' as they are offline.');
+						}
+					}
+
+					if (this.players.length < 3) {
+						void this.whisper(character, 'GAME: The game needs a minimum of three registered players to start the next round.');
+						return false;
+					}
+					this.setGameState('waiting_on_statement');
+					const next = this.determineNextPlayer();
+					void this.emote(`GAME: ${this.nameOf(character)} started the next round. It is ${this.nameOf(next)}'s turn to announce an 'I wouldn't mind' statement ` +
+						`using !iwouldnotmind [text]. Time limit: 2 minutes.`);
+					return true;
+				}),
+			})
+			.registerCommand({
+				key: 'iwouldnotmind',
+				description: 'When it is your turn: announce your "I wouldn\'t mind" statement',
+				usage: '[text]',
+				handler: CreateBotRepositoryCommand().handler({ restArgName: 'text' }, ({ character }, _args, rawText): boolean => {
+					if (this.activePlayerId !== character.id || this.gameState !== 'waiting_on_statement') {
+						void this.whisper(character, 'GAME: It is currently not your turn to announce a statement.');
+						return false;
+					}
+					// Allow people to type the full sentence out of habit
+					const text = CleanText(rawText).replace(/^i\s+(wouldn['’]?t|would\s+not)\s+mind\s*/i, '').trim();
+					if (!text) {
+						void this.whisper(character, 'GAME: Please provide a statement, for example: !iwouldnotmind being tied up a little bit');
+						return false;
+					}
+					this.statement = text;
+					this.teasers.clear();
+					for (const p of this.players) {
+						if (p.id !== character.id) this.teasers.add(p.id);
+					}
+					void this.emote(`GAME: ${this.nameOf(character)} says: "I wouldn't mind ${text}"`);
+					void this.emote(`GAME: The game proceeds when the following players have secretly submitted a tease using !tease [text]: ` +
+						`${this.teaserNames().join(', ')}. Time limit: 4 minutes.`);
+					this.setGameState('waiting_on_teases');
+					return true;
+				}),
+			})
+			.registerCommand({
+				key: 'tease',
+				description: 'Secretly submit your tease for the current statement',
+				usage: '[text]',
+				handler: CreateBotRepositoryCommand().handler({ restArgName: 'text' }, ({ character }, _args, rawText): boolean => {
+					if (this.gameState !== 'waiting_on_teases' || !this.teasers.has(character.id)) {
+						void this.whisper(character, 'GAME: You are currently not expected to submit a tease.');
+						return false;
+					}
+					const text = CleanText(rawText);
+					if (!text) {
+						void this.whisper(character, 'GAME: Please provide your tease, for example: !tease I would tie you up so tightly you could not move!');
+						return false;
+					}
+					this.teases.push({ player: character, text });
+					this.teasers.delete(character.id);
+					void this.whisper(character, `GAME: Your tease was received: ${text}`);
+
+					if (this.teasers.size === 0) {
+						this.revealTeases();
+						return true;
+					}
+					if (this.teasers.size === 2) {
+						this.turnTimer = Math.min(this.turnTimer, Date.now() + 120_000);
+					} else if (this.teasers.size === 1) {
+						this.turnTimer = Math.min(this.turnTimer, Date.now() + 60_000);
+					}
+					void this.emote(`GAME: A tease was received. Still waiting for: ${this.teaserNames().join(', ')}.`);
+					this.tick();
+					return true;
+				}),
+			})
+			.registerCommand({
+				key: 'pick',
+				description: 'Pick the tease you like most',
+				usage: '[number]',
+				handler: CreateBotRepositoryCommand()
+					// The bounds depend on the number of teases of the current round; the selector enforces them
+					.argumentDynamic(
+						'choice',
+						{ preparse: 'quotedArgTrimmed' },
+						() => CommandSelectorNumber({ min: 1, max: Math.max(1, this.teases.length) }),
+					)
+					.handler(({ character }, { choice }): boolean => {
+						if (this.activePlayerId !== character.id || this.gameState !== 'waiting_on_tease_selection') {
+							void this.whisper(character, 'GAME: You cannot pick a tease right now.');
+							return false;
+						}
+						const picked = this.teases[choice - 1];
+						// special state so the player cannot time out between pick and reveal
+						this.setGameState('waiting_on_reveal');
+
+						this.announceWinner(character, picked)
+							.catch((err: unknown) => {
+								logger.error('Error while announcing the winner', err);
+								if (this.gameState === 'waiting_on_reveal') {
+									this.setGameState('waiting_on_next_turn');
+								}
+							}); // No await: Handler returns quickly
+						return true;
+					}),
+			});
 	}
 
 	public destroy(): void {
 		this.destroyed = true;
 		clearInterval(this.tickTimer);
-		this.leaveTimers.forEach((t) => clearTimeout(t));
-		this.leaveTimers.clear();
 	}
 
 	// ----- sending ---------------------------------------------------------
@@ -160,191 +326,52 @@ class IwouldnotmindGame {
 
 	/**
 	 * Replaces the known presence list after (re)loading the space.
-	 * Registered players that are gone start their leave grace period,
-	 * registered players that are back have a pending grace period cancelled.
+	 * - Registered players that are no longer in the space are unregistered.
+	 * - Characters that were not known as present before (and are not registered) get the welcome message,
+	 *   so on the first load everybody who is already in the space is greeted.
 	 */
 	public syncPresent(characters: readonly BotSpaceCharacter[]): void {
-		const newPresent = new Map(characters.map((c) => [c.id, c] as const));
+		const oldPresent = this.present;
+		this.present = new Map(characters.map((c) => [c.id, c] as const));
 
-		for (const p of this.players) {
-			if (this.present.has(p.id) && !newPresent.has(p.id)) {
-				// Removes the character from `present` itself and starts the grace timer
-				this.onCharacterLeft(p.id);
+		for (const player of [...this.players]) {
+			if (!this.present.has(player.id)) {
+				this.unregisterPlayer(player, ' due to leaving the space.');
 			}
 		}
 
 		for (const c of characters) {
-			const idx = this.players.findIndex((p) => p.id === c.id);
-			if (idx >= 0) {
-				this.cancelLeaveTimer(c.id);
-				this.players[idx] = c;
+			if (!oldPresent.has(c.id) && !this.players.some((p) => p.id === c.id)) {
+				this.greet(c);
 			}
 		}
-
-		this.present = newPresent;
 	}
 
 	public onCharacterJoined(character: BotSpaceCharacter): void {
 		this.present.set(character.id, character);
-		const idx = this.players.findIndex((p) => p.id === character.id);
-		if (idx >= 0) {
-			// returning player: cancel pending unregister
-			this.cancelLeaveTimer(character.id);
-			this.players[idx] = character;
-		} else {
-			wait(2000)
-				.then(async () => {
-					// The character may have left (or the game been destroyed) in the meantime
-					if (this.destroyed || !this.present.has(character.id)) return;
-					await this.whisper(character,
-						`Welcome to 'I wouldn't mind', a kinky and fun multiplayer game. Use !manual to read the rules and !joingame to take part. ` +
-						`It is best played with four to five players, but can be started with three.`);
-				})
-				.catch((err) => {
-					logger.error('Error sending welcome message:', err);
-				});
+		if (!this.players.some((p) => p.id === character.id)) {
+			this.greet(character);
 		}
 	}
 
 	public onCharacterLeft(characterId: CharacterId): void {
 		const character = this.present.get(characterId);
 		this.present.delete(characterId);
-		if (!character || !this.players.some((p) => p.id === characterId)) return;
-		// The new API does not tell us whether the leave was intentional, so always apply the grace period
-		this.cancelLeaveTimer(characterId);
-		this.leaveTimers.set(characterId, setTimeout(() => {
-			this.leaveTimers.delete(characterId);
-			try {
-				this.unregisterPlayer(character, ' due to leaving the space.');
-			} catch (err) {
-				logger.error('Error while unregistering a player that left', err);
-			}
-		}, LEAVE_GRACE_MS));
-	}
-
-	private cancelLeaveTimer(characterId: CharacterId): void {
-		const t = this.leaveTimers.get(characterId);
-		if (t) clearTimeout(t);
-		this.leaveTimers.delete(characterId);
-	}
-
-	// ----- commands --------------------------------------------------------
-
-	public handleManual(sender: BotSpaceCharacter): void {
-		void this.whisper(sender, MANUAL);
-	}
-
-	public handleStatus(sender: BotSpaceCharacter): void {
-		const active = this.getActive();
-		const next = this.players.length > 1 && active
-			? this.players[(this.players.findIndex((p) => p.id === active.id) + 1) % this.players.length]
-			: null;
-		void this.whisper(sender, `This is the current status of the game:\n` +
-			`The game has the following registered players:\n` +
-			(this.players.map((p) => this.nameOf(p)).join(', ') || 'none') +
-			`\nThe player at turn is: ${active ? this.nameOf(active) : 'none'}\n` +
-			`The player next turn will be: ${next ? this.nameOf(next) : 'none'}` +
-			(this.gameState === 'waiting_on_teases'
-				? `\nThe following players still need to submit a tease for ${active ? this.nameOf(active) : 'none'}:\n${this.teaserNames().join(', ')}`
-				: ''));
-	}
-
-	public handleJoingame(sender: BotSpaceCharacter): void {
-		if (this.players.some((p) => p.id === sender.id)) {
-			void this.whisper(sender, 'GAME: You are already registered as a player.');
-			return;
-		}
-		this.players.push(sender);
-		void this.emote(`GAME: ${this.nameOf(sender)} was registered as an active player.`);
-	}
-
-	public handleNext(sender: BotSpaceCharacter): void {
-		if (!this.players.some((p) => p.id === sender.id)) {
-			void this.whisper(sender, 'GAME: Please register first by using !joingame.');
-		} else if (this.gameState === 'game_not_started' || this.gameState === 'waiting_on_next_turn') {
-			if (this.players.length < 3) {
-				void this.whisper(sender, 'GAME: The game needs a minimum of three registered players to start the next round.');
-				return;
-			}
-			this.setGameState('waiting_on_statement');
-			const next = this.determineNextPlayer();
-			void this.emote(`GAME: ${this.nameOf(sender)} started the next round. It is ${this.nameOf(next)}'s turn to announce an 'I wouldn't mind' statement ` +
-				`using !iwouldnotmind [text]. Time limit: 2 minutes.`);
-		} else {
-			void this.whisper(sender, 'GAME: A round is currently already in progress. You will be part of the next round.');
+		if (character && this.players.some((p) => p.id === characterId)) {
+			this.unregisterPlayer(character, ' due to leaving the space.');
 		}
 	}
 
-	public handleStatement(sender: BotSpaceCharacter, rawText: string): void {
-		if (this.activePlayerId !== sender.id || this.gameState !== 'waiting_on_statement') {
-			void this.whisper(sender, 'GAME: It is currently not your turn to announce a statement.');
-			return;
-		}
-		// Allow people to type the full sentence out of habit
-		const text = CleanText(rawText).replace(/^i\s+(wouldn['’]?t|would\s+not)\s+mind\s*/i, '').trim();
-		if (!text) {
-			void this.whisper(sender, 'GAME: Please provide a statement, for example: !iwouldnotmind being tied up a little bit');
-			return;
-		}
-		this.statement = text;
-		this.teasers.clear();
-		for (const p of this.players) {
-			if (p.id !== sender.id) this.teasers.add(p.id);
-		}
-		void this.emote(`GAME: ${this.nameOf(sender)} says: "I wouldn't mind ${text}"`);
-		void this.emote(`GAME: The game proceeds when the following players have secretly submitted a tease using !tease [text]: ` +
-			`${this.teaserNames().join(', ')}. Time limit: 4 minutes.`);
-		this.setGameState('waiting_on_teases');
-	}
-
-	public handleTease(sender: BotSpaceCharacter, rawText: string): void {
-		if (this.gameState !== 'waiting_on_teases' || !this.teasers.has(sender.id)) {
-			void this.whisper(sender, 'GAME: You are currently not expected to submit a tease.');
-			return;
-		}
-		const text = CleanText(rawText);
-		if (!text) {
-			void this.whisper(sender, 'GAME: Please provide your tease, for example: !tease I would tie you up so tightly you could not move!');
-			return;
-		}
-		this.teases.push({ player: sender, text });
-		this.teasers.delete(sender.id);
-		void this.whisper(sender, `GAME: Your tease was received: ${text}`);
-
-		if (this.teasers.size === 0) {
-			this.revealTeases();
-			return;
-		}
-		if (this.teasers.size === 2) {
-			this.turnTimer = Math.min(this.turnTimer, Date.now() + 120_000);
-		} else if (this.teasers.size === 1) {
-			this.turnTimer = Math.min(this.turnTimer, Date.now() + 60_000);
-		}
-		void this.emote(`GAME: A tease was received. Still waiting for: ${this.teaserNames().join(', ')}.`);
-		this.tick();
-	}
-
-	public handlePick(choice: number, sender: BotSpaceCharacter): void {
-		if (this.activePlayerId !== sender.id || this.gameState !== 'waiting_on_tease_selection') {
-			void this.whisper(sender, 'GAME: You cannot pick a tease right now.');
-			return;
-		}
-		const i = choice - 1;
-		if (!(Number.isInteger(i) && i >= 0 && i < this.teases.length)) {
-			void this.whisper(sender, 'Invalid number, expected !pick [number] from the numbers in front of one of the teases, for example !pick 2');
-			return;
-		}
-		// special state so the player cannot time out between pick and reveal
-		this.setGameState('waiting_on_reveal');
-		const picked = this.teases[i];
-
-		this.announceWinner(sender, picked)
+	private greet(character: BotSpaceCharacter): void {
+		wait(2000)
+			.then(async () => {
+				// The character may have left (or the game been destroyed) in the meantime
+				if (this.destroyed || !this.present.has(character.id)) return;
+				await this.whisper(character, WELCOME_MESSAGE);
+			})
 			.catch((err: unknown) => {
-				logger.error('Error while announcing the winner', err);
-				if (this.gameState === 'waiting_on_reveal') {
-					this.setGameState('waiting_on_next_turn');
-				}
-			}); // No await: Handler returns quickly
+				logger.error('Error sending welcome message:', err);
+			});
 	}
 
 	// ----- internals -------------------------------------------------------
@@ -518,70 +545,6 @@ class IwouldnotmindGame {
 }
 
 // ---------------------------------------------------------------------------
-// Commands
-// ---------------------------------------------------------------------------
-function CreateCommands(game: IwouldnotmindGame): BotCommandRepository {
-	/** Command without arguments, forwarded to the game together with the sending player */
-	const simpleCommand = (run: (sender: BotSpaceCharacter) => void) =>
-		CreateBotRepositoryCommand().handler(({ character }): boolean => {
-			run(character);
-			return true;
-		});
-
-	/** Command taking the rest of the line as free text */
-	const textCommand = (run: (sender: BotSpaceCharacter, text: string) => void) =>
-		CreateBotRepositoryCommand().handler({ restArgName: 'text' }, ({ character }, _args, text): boolean => {
-			run(character, text);
-			return true;
-		});
-
-	return new BotCommandRepository()
-		.registerCommand({
-			key: 'manual',
-			description: 'Show the manual of the game',
-			handler: simpleCommand((sender) => game.handleManual(sender)),
-		})
-		.registerCommand({
-			key: 'status',
-			description: 'Get information about the running game',
-			handler: simpleCommand((sender) => game.handleStatus(sender)),
-		})
-		.registerCommand({
-			key: 'joingame',
-			description: 'Register as a new player',
-			handler: simpleCommand((sender) => game.handleJoingame(sender)),
-		})
-		.registerCommand({
-			key: 'next',
-			description: 'Start a new round after registering (needs 3+ players)',
-			handler: simpleCommand((sender) => game.handleNext(sender)),
-		})
-		.registerCommand({
-			key: 'iwouldnotmind',
-			description: 'When it is your turn: announce your "I wouldn\'t mind" statement',
-			usage: '[text]',
-			handler: textCommand((sender, text) => game.handleStatement(sender, text)),
-		})
-		.registerCommand({
-			key: 'tease',
-			description: 'Secretly submit your tease for the current statement',
-			usage: '[text]',
-			handler: textCommand((sender, text) => game.handleTease(sender, text)),
-		})
-		.registerCommand({
-			key: 'pick',
-			description: 'Pick the tease you like most',
-			usage: '[number]',
-			handler: CreateBotRepositoryCommand()
-				.argument('choice', CommandSelectorNumber({ min: 1, max: 50 }))
-				.handler(({ character }, { choice }): boolean => {
-					game.handlePick(choice, character);
-					return true;
-				}),
-		});
-}
-
-// ---------------------------------------------------------------------------
 // Bot instance: wraps the connection and owns the game for the lifetime of the space connection
 // ---------------------------------------------------------------------------
 class IwouldnotmindBotInstance implements SimpleBotOrchestratorBotInstance {
@@ -594,7 +557,7 @@ class IwouldnotmindBotInstance implements SimpleBotOrchestratorBotInstance {
 		this.botConnection = new BotConnection(bot, space);
 		this.game = new IwouldnotmindGame(this.botConnection);
 
-		this.botConnection.withCommandRouter(CreateCommands(this.game));
+		this.botConnection.withCommandRouter(this.game.commands);
 
 		this.botConnection.on('connected', () => logger.info('Bot connected to space', bot, space));
 		this.botConnection.on('connectError', (err) => logger.warning('Error connecting', bot, space, err));
@@ -602,7 +565,7 @@ class IwouldnotmindBotInstance implements SimpleBotOrchestratorBotInstance {
 		this.botConnection.on('disconnected', () => logger.info('Bot disconnected from space', bot, space));
 		this.botConnection.on('loaded', (spaceState) => {
 			logger.info('Space loaded successfully', bot, space);
-			// Runs on every (re)load: resync presence, so leaves and returns during a disconnect are handled
+			// Runs on every (re)load: resync presence, greet everybody not greeted yet, drop registered players that are gone
 			this.game.syncPresent(spaceState.characters);
 
 			if (this.boundState !== spaceState) {
