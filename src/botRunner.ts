@@ -12,7 +12,7 @@ import { Assert, AssertNever, CommandSelectorNumber, GetLogger, type BotChatMess
 import type { BotId, BotShardConnectionInfo } from 'pandora-common/bots';
 import { ENV } from './config.ts';
 
-const { CC_BOTS_BOT_ID } = ENV;
+const { CC_BOTS_BOT_ID, CC_BOTS_SHARD_BASE_ADDRESS } = ENV;
 const logger = GetLogger('IWouldNotMind');
 
 // ---------------------------------------------------------------------------
@@ -661,7 +661,7 @@ export async function RunBots(api: PandoraApi): Promise<void> {
 	const orchestrator = new SimpleBotOrchestrator(api, CC_BOTS_BOT_ID, (bot, space, connectionInfo) => {
 		logger.info('Spawning new connection for bot and space', bot, space, connectionInfo);
 		return new IwouldnotmindBotInstance(bot, space, connectionInfo);
-	}, 'http://localhost:6969/');
+	}, CC_BOTS_SHARD_BASE_ADDRESS);
 
 	await orchestrator.start();
 }

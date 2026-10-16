@@ -6,6 +6,7 @@ export const EnvParser = CreateEnvParser({
 	CC_BOTS_TOKEN: PandoraAccessTokenSchema,
 	CC_BOTS_BOT_ID: BotIdSchema,
 	CC_BOTS_SERVER_ADDRESS: z.string(),
+	CC_BOTS_SHARD_BASE_ADDRESS: z.string(),
 
 	//#region Logging
 
