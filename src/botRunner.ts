@@ -86,6 +86,10 @@ const WELCOME_MESSAGE =
 
 // ---------------------------------------------------------------------------
 // Game logic (one instance per space; survives shard disconnects)
+//
+// Concurrency convention: since sending is awaited, other commands or timers may run while a flow waits.
+// Therefore every flow first applies all of its state changes synchronously and only then awaits its messages.
+// Messages are queued in call order (see `send`), so the order in chat is the order of the calls, not of the awaits.
 // ---------------------------------------------------------------------------
 class IwouldnotmindGame {
 	/** The commands of this game; handlers are closures created in the constructor */
@@ -110,6 +114,8 @@ class IwouldnotmindGame {
 	private present = new Map<CharacterId, BotSpaceCharacter>();
 
 	private readonly tickTimer: NodeJS.Timeout;
+	/** Prevents overlapping ticks while a tick is still waiting for its messages */
+	private tickRunning = false;
 
 	/** Set on destroy; stops all further sending and long-running flows */
 	private destroyed = false;
@@ -121,34 +127,33 @@ class IwouldnotmindGame {
 	constructor(conn: BotConnection) {
 		this.conn = conn;
 		this.tickTimer = setInterval(() => {
-			try {
-				this.tick();
-			} catch (err) {
+			this.runTick().catch((err: unknown) => {
 				logger.error('Error in game tick', err);
-			}
+			});
 		}, 1000);
 		this.setGameState('game_not_started');
 
 		// Return value convention for all commands:
 		//   true  = the command took effect (or there is nothing the user could fix), input is cleared
 		//   false = the user should modify the command or retry later, input is kept
+		// All messages of a command are sent before the command finishes processing.
 		this.commands = new BotCommandRepository()
 			.registerCommand({
 				key: 'manual',
 				description: 'Show the manual of the game',
-				handler: CreateBotRepositoryCommand().handler(({ character }): boolean => {
-					void this.whisper(character, MANUAL);
+				handler: CreateBotRepositoryCommand().handler(async ({ character }): Promise<boolean> => {
+					await this.whisper(character, MANUAL);
 					return true;
 				}),
 			})
 			.registerCommand({
 				key: 'status',
 				description: 'Get information about the running game',
-				handler: CreateBotRepositoryCommand().handler(({ character }): boolean => {
+				handler: CreateBotRepositoryCommand().handler(async ({ character }): Promise<boolean> => {
 					const active = this.getActive();
 					// The queue front is the next player; the player at turn is at the back, so skip them if they are the only one
 					const next = this.players.find((p) => p.id !== this.activePlayerId) ?? null;
-					void this.whisper(character, `This is the current status of the game:\n` +
+					await this.whisper(character, `This is the current status of the game:\n` +
 						`The game has the following registered players:\n` +
 						(this.players.map((p) => this.nameOf(p)).join(', ') || 'none') +
 						`\nThe player at turn is: ${active ? this.nameOf(active) : 'none'}\n` +
@@ -162,44 +167,48 @@ class IwouldnotmindGame {
 			.registerCommand({
 				key: 'joingame',
 				description: 'Register as a new player',
-				handler: CreateBotRepositoryCommand().handler(({ character }): boolean => {
+				handler: CreateBotRepositoryCommand().handler(async ({ character }): Promise<boolean> => {
 					if (this.players.some((p) => p.id === character.id)) {
-						void this.whisper(character, 'GAME: You are already registered as a player.');
+						await this.whisper(character, 'GAME: You are already registered as a player.');
 						return true;
 					}
 					this.players.push(character);
-					void this.emote(`GAME: ${this.nameOf(character)} was registered as an active player.`);
+					await this.emote(`GAME: ${this.nameOf(character)} was registered as an active player.`);
 					return true;
 				}),
 			})
 			.registerCommand({
 				key: 'next',
 				description: 'Start a new round after registering (needs 3+ players)',
-				handler: CreateBotRepositoryCommand().handler(({ character }): boolean => {
+				handler: CreateBotRepositoryCommand().handler(async ({ character }): Promise<boolean> => {
 					if (!this.players.some((p) => p.id === character.id)) {
-						void this.whisper(character, 'GAME: Please register first by using !joingame.');
+						await this.whisper(character, 'GAME: Please register first by using !joingame.');
 						return false;
 					}
 					if (this.isRoundRunning()) {
-						void this.whisper(character, 'GAME: A round is currently already in progress. You will be part of the next round.');
+						await this.whisper(character, 'GAME: A round is currently already in progress. You will be part of the next round.');
 						return false;
 					}
+
+					const pending: Promise<void>[] = [];
 
 					// Players that went offline are removed right when a round starts
 					for (const player of [...this.players]) {
 						if (player.data.onlineStatus === 'offline') {
-							this.unregisterPlayer(player, 'as they are offline.');
+							pending.push(this.unregisterPlayer(player, 'as they are offline.'));
 						}
 					}
 
 					if (this.players.length < 3) {
-						void this.whisper(character, 'GAME: The game needs a minimum of three registered players to start the next round.');
+						pending.push(this.whisper(character, 'GAME: The game needs a minimum of three registered players to start the next round.'));
+						await Promise.all(pending);
 						return false;
 					}
 					this.setGameState('waiting_on_statement');
 					const next = this.determineNextPlayer();
-					void this.emote(`GAME: ${this.nameOf(character)} started the next round. It is ${this.nameOf(next)}'s turn to announce an 'I wouldn't mind' statement ` +
-						`using !iwouldnotmind [text]. Time limit: 2 minutes.`);
+					pending.push(this.emote(`GAME: ${this.nameOf(character)} started the next round. It is ${this.nameOf(next)}'s turn to announce an 'I wouldn't mind' statement ` +
+						`using !iwouldnotmind [text]. Time limit: 2 minutes.`));
+					await Promise.all(pending);
 					return true;
 				}),
 			})
@@ -207,15 +216,15 @@ class IwouldnotmindGame {
 				key: 'iwouldnotmind',
 				description: 'When it is your turn: announce your "I wouldn\'t mind" statement',
 				usage: '[text]',
-				handler: CreateBotRepositoryCommand().handler({ restArgName: 'text' }, ({ character }, _args, rawText): boolean => {
+				handler: CreateBotRepositoryCommand().handler({ restArgName: 'text' }, async ({ character }, _args, rawText): Promise<boolean> => {
 					if (this.activePlayerId !== character.id || this.gameState !== 'waiting_on_statement') {
-						void this.whisper(character, 'GAME: It is currently not your turn to announce a statement.');
+						await this.whisper(character, 'GAME: It is currently not your turn to announce a statement.');
 						return false;
 					}
 					// Allow people to type the full sentence out of habit
 					const text = CleanText(rawText).replace(/^i\s+(wouldn['’]?t|would\s+not)\s+mind\s*/i, '').trim();
 					if (!text) {
-						void this.whisper(character, 'GAME: Please provide a statement, for example: !iwouldnotmind being tied up a little bit');
+						await this.whisper(character, 'GAME: Please provide a statement, for example: !iwouldnotmind being tied up a little bit');
 						return false;
 					}
 					this.statement = text;
@@ -223,15 +232,17 @@ class IwouldnotmindGame {
 					for (const p of this.players) {
 						if (p.id !== character.id) this.teasers.add(p.id);
 					}
-					void this.emote(`GAME: ${this.nameOf(character)} says: "I wouldn't mind ${text}"`);
 					this.setGameState('waiting_on_teases');
+
+					const pending: Promise<void>[] = [this.emote(`GAME: ${this.nameOf(character)} says: "I wouldn't mind ${text}"`)];
 					if (this.teasers.size === 0) {
 						// All other players left in the meantime: nobody to wait for
-						this.revealTeases();
-						return true;
+						pending.push(this.revealTeases());
+					} else {
+						pending.push(this.emote(`GAME: The game proceeds when the following players have secretly submitted a tease using !tease [text]: ` +
+							`${this.teaserNames().join(', ')}. Time limit: 4 minutes.`));
 					}
-					void this.emote(`GAME: The game proceeds when the following players have secretly submitted a tease using !tease [text]: ` +
-						`${this.teaserNames().join(', ')}. Time limit: 4 minutes.`);
+					await Promise.all(pending);
 					return true;
 				}),
 			})
@@ -239,31 +250,35 @@ class IwouldnotmindGame {
 				key: 'tease',
 				description: 'Secretly submit your tease for the current statement',
 				usage: '[text]',
-				handler: CreateBotRepositoryCommand().handler({ restArgName: 'text' }, ({ character }, _args, rawText): boolean => {
+				handler: CreateBotRepositoryCommand().handler({ restArgName: 'text' }, async ({ character }, _args, rawText): Promise<boolean> => {
 					if (this.gameState !== 'waiting_on_teases' || !this.teasers.has(character.id)) {
-						void this.whisper(character, 'GAME: You are currently not expected to submit a tease.');
+						await this.whisper(character, 'GAME: You are currently not expected to submit a tease.');
 						return false;
 					}
 					const text = CleanText(rawText);
 					if (!text) {
-						void this.whisper(character, 'GAME: Please provide your tease, for example: !tease I would tie you up so tightly you could not move!');
+						await this.whisper(character, 'GAME: Please provide your tease, for example: !tease I would tie you up so tightly you could not move!');
 						return false;
 					}
 					this.teases.push({ player: character, text });
 					this.teasers.delete(character.id);
-					void this.whisper(character, `GAME: Your tease was received: ${text}`);
 
-					if (this.teasers.size === 0) {
-						this.revealTeases();
-						return true;
-					}
+					const allReceived = this.teasers.size === 0;
 					if (this.teasers.size === 2) {
 						this.turnTimer = Math.min(this.turnTimer, Date.now() + 120_000);
 					} else if (this.teasers.size === 1) {
 						this.turnTimer = Math.min(this.turnTimer, Date.now() + 60_000);
 					}
-					void this.emote(`GAME: A tease was received. Still waiting for: ${this.teaserNames().join(', ')}.`);
-					this.tick();
+
+					const confirmation = this.whisper(character, `GAME: Your tease was received: ${text}`);
+					const followUp = allReceived
+						? this.revealTeases()
+						: this.emote(`GAME: A tease was received. Still waiting for: ${this.teaserNames().join(', ')}.`);
+					await Promise.all([confirmation, followUp]);
+
+					if (!allReceived) {
+						await this.runTick();
+					}
 					return true;
 				}),
 			})
@@ -278,22 +293,23 @@ class IwouldnotmindGame {
 						{ preparse: 'quotedArgTrimmed' },
 						() => CommandSelectorNumber({ min: 1, max: Math.max(1, this.teases.length) }),
 					)
-					.handler(({ character }, { choice }): boolean => {
+					.handler(async ({ character }, { choice }): Promise<boolean> => {
 						if (this.activePlayerId !== character.id || this.gameState !== 'waiting_on_tease_selection') {
-							void this.whisper(character, 'GAME: You cannot pick a tease right now.');
+							await this.whisper(character, 'GAME: You cannot pick a tease right now.');
 							return false;
 						}
 						const picked = this.teases[choice - 1];
 						// special state so the player cannot time out between pick and reveal
 						this.setGameState('waiting_on_reveal');
 
+						// The reveal takes several seconds, so it is intentionally not awaited: the handler returns quickly
 						this.announceWinner(character, picked)
 							.catch((err: unknown) => {
 								logger.error('Error while announcing the winner', err);
 								if (this.gameState === 'waiting_on_reveal') {
 									this.setGameState('waiting_on_next_turn');
 								}
-							}); // No await: Handler returns quickly
+							});
 						return true;
 					}),
 			});
@@ -306,6 +322,7 @@ class IwouldnotmindGame {
 
 	// ----- sending ---------------------------------------------------------
 
+	/** Queues the message immediately (so the order of calls is the order in chat) and resolves when it was sent. Never rejects. */
 	private send(message: BotChatMessage): Promise<void> {
 		const result = this.sendQueue.then(async () => {
 			if (this.destroyed) return;
@@ -315,7 +332,6 @@ class IwouldnotmindGame {
 				logger.error('Failed to send message', err);
 			}
 		});
-		// Never rejects, errors are handled inside
 		this.sendQueue = result;
 		return result;
 	}
@@ -338,21 +354,21 @@ class IwouldnotmindGame {
 	 * - Characters that were not known as present before (and are not registered) get the welcome message,
 	 *   so on the first load everybody who is already in the space is greeted.
 	 */
-	public syncPresent(characters: readonly BotSpaceCharacter[]): void {
+	public async syncPresent(characters: readonly BotSpaceCharacter[]): Promise<void> {
 		const oldPresent = this.present;
 		this.present = new Map(characters.map((c) => [c.id, c] as const));
-
-		for (const player of [...this.players]) {
-			if (!this.present.has(player.id)) {
-				this.unregisterPlayer(player, 'due to leaving the space.');
-			}
-		}
 
 		for (const c of characters) {
 			if (!oldPresent.has(c.id) && !this.players.some((p) => p.id === c.id)) {
 				this.greet(c);
 			}
 		}
+
+		await Promise.all(
+			this.players
+				.filter((p) => !this.present.has(p.id))
+				.map((p) => this.unregisterPlayer(p, 'due to leaving the space.')),
+		);
 	}
 
 	public onCharacterJoined(character: BotSpaceCharacter): void {
@@ -362,14 +378,15 @@ class IwouldnotmindGame {
 		}
 	}
 
-	public onCharacterLeft(characterId: CharacterId): void {
+	public async onCharacterLeft(characterId: CharacterId): Promise<void> {
 		const character = this.present.get(characterId);
 		this.present.delete(characterId);
 		if (character && this.players.some((p) => p.id === characterId)) {
-			this.unregisterPlayer(character, 'due to leaving the space.');
+			await this.unregisterPlayer(character, 'due to leaving the space.');
 		}
 	}
 
+	/** Sends the welcome message after a short delay; nobody waits for it, so errors are only logged */
 	private greet(character: BotSpaceCharacter): void {
 		wait(2000)
 			.then(async () => {
@@ -435,11 +452,13 @@ class IwouldnotmindGame {
 	 * Removes a player from the game and announces it.
 	 * @param reason Sentence fragment without leading space, e.g. 'due to leaving the space.'
 	 */
-	private unregisterPlayer(character: BotSpaceCharacter, reason: string): void {
+	private async unregisterPlayer(character: BotSpaceCharacter, reason: string): Promise<void> {
+		// All state changes happen synchronously, the messages are queued in order and awaited together at the end
+		const pending: Promise<void>[] = [];
 		const index = this.players.findIndex((p) => p.id === character.id);
 		if (index >= 0) {
 			// Name is computed before the splice, so duplicates among the registered players are still detected
-			void this.emote(`GAME: ${this.nameOf(character)} was unregistered as an active player ${reason}`);
+			pending.push(this.emote(`GAME: ${this.nameOf(character)} was unregistered as an active player ${reason}`));
 			this.players.splice(index, 1);
 
 			if (this.activePlayerId === character.id) {
@@ -448,7 +467,7 @@ class IwouldnotmindGame {
 				// The winner reveal is not interruptible, it finishes the round on its own.
 				const interruptible = this.isRoundRunning() && this.gameState !== 'waiting_on_reveal';
 				if (interruptible && !this.present.has(character.id)) {
-					void this.emote('GAME: As the player at turn has left the space, please start the next round using !next.');
+					pending.push(this.emote('GAME: As the player at turn has left the space, please start the next round using !next.'));
 					this.setGameState('waiting_on_next_turn');
 				}
 			}
@@ -457,27 +476,28 @@ class IwouldnotmindGame {
 		this.teasers.delete(character.id);
 		// the last person we were waiting on left
 		if (this.teasers.size === 0 && this.gameState === 'waiting_on_teases') {
-			this.revealTeases();
+			pending.push(this.revealTeases());
 		}
+		await Promise.all(pending);
 	}
 
-	private revealTeases(): void {
+	private async revealTeases(): Promise<void> {
 		if (this.teases.length === 0) {
-			void this.emote('GAME: As no tease has been received, please start the next round using !next.');
 			this.setGameState('waiting_on_next_turn');
+			await this.emote('GAME: As no tease has been received, please start the next round using !next.');
 			return;
 		}
+		this.setGameState('waiting_on_tease_selection');
 		const active = this.getActive();
 		if (active) {
 			ShuffleInPlace(this.teases);
-			void this.emote(`GAME: Dear ${this.nameOf(active)}, all teases have been received for "I wouldn't mind ${this.statement}". ` +
+			await this.emote(`GAME: Dear ${this.nameOf(active)}, all teases have been received for "I wouldn't mind ${this.statement}". ` +
 				`Please choose one using !pick and the number in front of it (for example !pick 2). Time limit: 2.5 minutes.\n ` +
 				this.teases.map((t, i) => `(${i + 1}) - ${t.text}`).join('\n '));
 		}
-		this.setGameState('waiting_on_tease_selection');
 	}
 
-	private announceTimer(): void {
+	private async announceTimer(): Promise<void> {
 		const remaining = Math.ceil(Math.max(0, this.turnTimer - Date.now()) / 1000);
 		const crossed = TIMER_ANNOUNCE_AT.filter((t) => remaining <= t && !this.announced.has(t));
 		if (crossed.length === 0) return;
@@ -497,15 +517,26 @@ class IwouldnotmindGame {
 			default:
 				return;
 		}
-		void this.emote(`GAME: ${remaining}s left, waiting for ${waitingFor}.`);
+		await this.emote(`GAME: ${remaining}s left, waiting for ${waitingFor}.`);
 	}
 
-	private tick(): void {
+	/** Runs a tick unless one is still in progress */
+	private async runTick(): Promise<void> {
+		if (this.tickRunning) return;
+		this.tickRunning = true;
+		try {
+			await this.tick();
+		} finally {
+			this.tickRunning = false;
+		}
+	}
+
+	private async tick(): Promise<void> {
 		// Nothing is timed while idle or during the (not interruptible) winner reveal
 		if (!this.isRoundRunning() || this.gameState === 'waiting_on_reveal') return;
 
 		if (Date.now() < this.turnTimer) {
-			this.announceTimer();
+			await this.announceTimer();
 			return;
 		}
 
@@ -514,22 +545,21 @@ class IwouldnotmindGame {
 			const what = this.gameState === 'waiting_on_statement' ? 'their turn' : 'selecting a tease';
 			this.setGameState('waiting_on_next_turn');
 			if (active) {
-				this.unregisterPlayer(active, `due to taking too long for ${what}. Please start the next round using !next.`);
+				await this.unregisterPlayer(active, `due to taking too long for ${what}. Please start the next round using !next.`);
 			} else {
 				logger.error(`Timed out in ${what} state without active player!`);
 			}
 		} else if (this.gameState === 'waiting_on_teases') {
 			if (this.teases.length > 0) {
 				if (this.teasers.size === 0) {
-					this.revealTeases();
+					await this.revealTeases();
 				} else {
-					for (const p of this.players.filter((pl) => this.teasers.has(pl.id))) {
-						this.unregisterPlayer(p, 'due to taking too long to submit a tease.');
-					}
+					const tooSlow = this.players.filter((p) => this.teasers.has(p.id));
+					await Promise.all(tooSlow.map((p) => this.unregisterPlayer(p, 'due to taking too long to submit a tease.')));
 				}
 			} else {
-				void this.emote('GAME: No tease has been received within the time limit. Please start the next round using !next.');
 				this.setGameState('waiting_on_next_turn');
+				await this.emote('GAME: No tease has been received within the time limit. Please start the next round using !next.');
 			}
 		}
 	}
@@ -589,13 +619,19 @@ class IwouldnotmindBotInstance implements SimpleBotOrchestratorBotInstance {
 		this.botConnection.on('loaded', (spaceState) => {
 			logger.info('Space loaded successfully', bot, space);
 			// Runs on every (re)load: resync presence, greet everybody not greeted yet, drop registered players that are gone
-			this.game.syncPresent(spaceState.characters);
+			this.game.syncPresent(spaceState.characters).catch((err: unknown) => {
+				logger.error('Error while syncing presence', err);
+			});
 
 			if (this.boundState !== spaceState) {
 				Assert(this.boundState == null);
 				this.boundState = spaceState;
 				spaceState.on('characterJoined', (c) => this.game.onCharacterJoined(c));
-				spaceState.on('characterLeft', (id) => this.game.onCharacterLeft(id));
+				spaceState.on('characterLeft', (id) => {
+					this.game.onCharacterLeft(id).catch((err: unknown) => {
+						logger.error('Error while handling a character that left', err);
+					});
+				});
 			}
 		});
 
