@@ -431,7 +431,9 @@ class IwouldnotmindGame {
 			if (this.activePlayerId === character.id) {
 				this.activePlayerId = null;
 				// player at turn left during a round -> the round cannot continue
-				const roundRunning = this.gameState !== 'game_not_started' && this.gameState !== 'waiting_on_next_turn';
+				const roundRunning = this.gameState !== 'game_not_started'
+					&& this.gameState !== 'waiting_on_next_turn'
+					&& this.gameState !== 'waiting_on_reveal';
 				if (roundRunning && !this.present.has(character.id)) {
 					void this.emote('GAME: As the player at turn has left the space, please start the next round using !next.');
 					this.setGameState('waiting_on_next_turn');
