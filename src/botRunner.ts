@@ -91,6 +91,10 @@ class IwouldnotmindGame {
 	/** The commands of this game; handlers are closures created in the constructor */
 	public readonly commands: BotCommandRepository;
 
+	/**
+	 * Registered players as a turn queue: the front is the next player to be at turn.
+	 * The player at turn is moved to the back when their round starts, new players join at the back.
+	 */
 	private readonly players: BotSpaceCharacter[] = [];
 	/** ids of players that still need to submit a tease */
 	private readonly teasers = new Set<CharacterId>();
@@ -142,9 +146,8 @@ class IwouldnotmindGame {
 				description: 'Get information about the running game',
 				handler: CreateBotRepositoryCommand().handler(({ character }): boolean => {
 					const active = this.getActive();
-					const next = this.players.length > 1 && active
-						? this.players[(this.players.findIndex((p) => p.id === active.id) + 1) % this.players.length]
-						: null;
+					// The queue front is the next player; the player at turn is at the back, so skip them if they are the only one
+					const next = this.players.find((p) => p.id !== this.activePlayerId) ?? null;
 					void this.whisper(character, `This is the current status of the game:\n` +
 						`The game has the following registered players:\n` +
 						(this.players.map((p) => this.nameOf(p)).join(', ') || 'none') +
@@ -409,9 +412,11 @@ class IwouldnotmindGame {
 		return this.players.filter((p) => this.teasers.has(p.id)).map((p) => this.nameOf(p));
 	}
 
+	/** Takes the next player from the front of the queue, makes them the player at turn and moves them to the back */
 	private determineNextPlayer(): BotSpaceCharacter {
-		const idx = this.players.findIndex((p) => p.id === this.activePlayerId);
-		const next = this.players[idx < 0 ? 0 : (idx + 1) % this.players.length];
+		const next = this.players.shift();
+		Assert(next != null, 'No players registered');
+		this.players.push(next);
 		this.activePlayerId = next.id;
 		return next;
 	}
@@ -421,15 +426,17 @@ class IwouldnotmindGame {
 		if (index >= 0) {
 			// Name is computed before the splice, so duplicates among the registered players are still detected
 			void this.emote(`GAME: ${this.nameOf(character)} was unregistered as an active player` + message);
-			// player at turn left -> soft reset: step back so the next player is the right one
-			if (this.activePlayerId === character.id && this.players.length > 1) {
-				this.activePlayerId = this.players[index === 0 ? this.players.length - 1 : index - 1].id;
-				if (!this.present.has(character.id)) {
+			this.players.splice(index, 1);
+
+			if (this.activePlayerId === character.id) {
+				this.activePlayerId = null;
+				// player at turn left during a round -> the round cannot continue
+				const roundRunning = this.gameState !== 'game_not_started' && this.gameState !== 'waiting_on_next_turn';
+				if (roundRunning && !this.present.has(character.id)) {
 					void this.emote('GAME: As the player at turn has left the space, please start the next round using !next.');
 					this.setGameState('waiting_on_next_turn');
 				}
 			}
-			this.players.splice(index, 1);
 			if (this.players.length === 0) this.setGameState('game_not_started');
 		}
 		this.teasers.delete(character.id);
