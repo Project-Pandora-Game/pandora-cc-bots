@@ -180,7 +180,7 @@ class IwouldnotmindGame {
 						void this.whisper(character, 'GAME: Please register first by using !joingame.');
 						return false;
 					}
-					if (this.gameState !== 'game_not_started' && this.gameState !== 'waiting_on_next_turn') {
+					if (this.isRoundRunning()) {
 						void this.whisper(character, 'GAME: A round is currently already in progress. You will be part of the next round.');
 						return false;
 					}
@@ -188,7 +188,7 @@ class IwouldnotmindGame {
 					// Players that went offline are removed right when a round starts
 					for (const player of [...this.players]) {
 						if (player.data.onlineStatus === 'offline') {
-							this.unregisterPlayer(player, ' as they are offline.');
+							this.unregisterPlayer(player, 'as they are offline.');
 						}
 					}
 
@@ -224,9 +224,14 @@ class IwouldnotmindGame {
 						if (p.id !== character.id) this.teasers.add(p.id);
 					}
 					void this.emote(`GAME: ${this.nameOf(character)} says: "I wouldn't mind ${text}"`);
+					this.setGameState('waiting_on_teases');
+					if (this.teasers.size === 0) {
+						// All other players left in the meantime: nobody to wait for
+						this.revealTeases();
+						return true;
+					}
 					void this.emote(`GAME: The game proceeds when the following players have secretly submitted a tease using !tease [text]: ` +
 						`${this.teaserNames().join(', ')}. Time limit: 4 minutes.`);
-					this.setGameState('waiting_on_teases');
 					return true;
 				}),
 			})
@@ -339,7 +344,7 @@ class IwouldnotmindGame {
 
 		for (const player of [...this.players]) {
 			if (!this.present.has(player.id)) {
-				this.unregisterPlayer(player, ' due to leaving the space.');
+				this.unregisterPlayer(player, 'due to leaving the space.');
 			}
 		}
 
@@ -361,7 +366,7 @@ class IwouldnotmindGame {
 		const character = this.present.get(characterId);
 		this.present.delete(characterId);
 		if (character && this.players.some((p) => p.id === characterId)) {
-			this.unregisterPlayer(character, ' due to leaving the space.');
+			this.unregisterPlayer(character, 'due to leaving the space.');
 		}
 	}
 
@@ -378,6 +383,11 @@ class IwouldnotmindGame {
 	}
 
 	// ----- internals -------------------------------------------------------
+
+	/** True while a round is in progress (from the round start until the winner reveal is done) */
+	private isRoundRunning(): boolean {
+		return this.gameState !== 'game_not_started' && this.gameState !== 'waiting_on_next_turn';
+	}
 
 	private async announceWinner(chooser: BotSpaceCharacter, picked: Tease): Promise<void> {
 		await this.emote(`GAME: ${this.nameOf(chooser)} chose:\n${picked.text}`);
@@ -421,20 +431,23 @@ class IwouldnotmindGame {
 		return next;
 	}
 
-	private unregisterPlayer(character: BotSpaceCharacter, message: string): void {
+	/**
+	 * Removes a player from the game and announces it.
+	 * @param reason Sentence fragment without leading space, e.g. 'due to leaving the space.'
+	 */
+	private unregisterPlayer(character: BotSpaceCharacter, reason: string): void {
 		const index = this.players.findIndex((p) => p.id === character.id);
 		if (index >= 0) {
 			// Name is computed before the splice, so duplicates among the registered players are still detected
-			void this.emote(`GAME: ${this.nameOf(character)} was unregistered as an active player` + message);
+			void this.emote(`GAME: ${this.nameOf(character)} was unregistered as an active player ${reason}`);
 			this.players.splice(index, 1);
 
 			if (this.activePlayerId === character.id) {
 				this.activePlayerId = null;
-				// player at turn left during a round -> the round cannot continue
-				const roundRunning = this.gameState !== 'game_not_started'
-					&& this.gameState !== 'waiting_on_next_turn'
-					&& this.gameState !== 'waiting_on_reveal';
-				if (roundRunning && !this.present.has(character.id)) {
+				// Player at turn left during a round -> the round cannot continue.
+				// The winner reveal is not interruptible, it finishes the round on its own.
+				const interruptible = this.isRoundRunning() && this.gameState !== 'waiting_on_reveal';
+				if (interruptible && !this.present.has(character.id)) {
 					void this.emote('GAME: As the player at turn has left the space, please start the next round using !next.');
 					this.setGameState('waiting_on_next_turn');
 				}
@@ -488,7 +501,8 @@ class IwouldnotmindGame {
 	}
 
 	private tick(): void {
-		if (this.gameState === 'game_not_started' || this.gameState === 'waiting_on_next_turn' || this.gameState === 'waiting_on_reveal') return;
+		// Nothing is timed while idle or during the (not interruptible) winner reveal
+		if (!this.isRoundRunning() || this.gameState === 'waiting_on_reveal') return;
 
 		if (Date.now() < this.turnTimer) {
 			this.announceTimer();
@@ -500,7 +514,7 @@ class IwouldnotmindGame {
 			const what = this.gameState === 'waiting_on_statement' ? 'their turn' : 'selecting a tease';
 			this.setGameState('waiting_on_next_turn');
 			if (active) {
-				this.unregisterPlayer(active, ` due to taking too long for ${what}. Please start the next round using !next.`);
+				this.unregisterPlayer(active, `due to taking too long for ${what}. Please start the next round using !next.`);
 			} else {
 				logger.error(`Timed out in ${what} state without active player!`);
 			}
@@ -510,7 +524,7 @@ class IwouldnotmindGame {
 					this.revealTeases();
 				} else {
 					for (const p of this.players.filter((pl) => this.teasers.has(pl.id))) {
-						this.unregisterPlayer(p, ' due to taking too long to submit a tease.');
+						this.unregisterPlayer(p, 'due to taking too long to submit a tease.');
 					}
 				}
 			} else {
