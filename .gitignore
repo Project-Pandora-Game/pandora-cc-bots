@@ -9,3 +9,4 @@
 /.scannerwork
 
 /.env
+/docker.env

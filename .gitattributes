@@ -2,5 +2,6 @@
 *.ts text eol=lf
 *.json text eol=lf
 *.yml text eol=lf whitespace=-indent-with-non-tab
+*.yaml text eol=lf whitespace=-indent-with-non-tab
 *.md text eol=lf
 /pnpm-lock.yaml text eol=lf whitespace=-indent-with-non-tab

@@ -1,0 +1,40 @@
+FROM docker.io/node:24.21.0-alpine AS builder
+
+# Update and enable corepack
+RUN npm install -g corepack@latest
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable
+
+WORKDIR /app
+ENV CI=true
+
+# Files required by pnpm to fetch dependencies
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
+# Copy patches folder (if we have any patches)
+# COPY ./patches ./patches
+
+ENV PNPM_HOME="/pnpm"
+ENV PATH="$PNPM_HOME:$PATH"
+RUN corepack prepare
+
+# Bundle app source
+COPY . ./
+
+RUN --mount=type=cache,id=pnpm,sharing=locked,target=/pnpm/store \
+	pnpm install -r --frozen-lockfile --trust-lockfile
+
+# Build
+RUN pnpm -r run build
+
+# Shrinkwrap for deployment
+RUN --mount=type=cache,id=pnpm,sharing=locked,target=/pnpm/store \
+	pnpm pm deploy --filter=pandora-cc-bots --prod /app/deploy
+
+# Production image
+FROM docker.io/node:24.21.0-alpine AS pandora-cc-bots
+
+WORKDIR /app
+
+COPY --from=builder /app/deploy /app
+
+CMD ["node", "--enable-source-maps", "dist/index.js"]

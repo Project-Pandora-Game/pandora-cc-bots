@@ -1,0 +1,15 @@
+services:
+
+  pandora-cc-bots:
+    build:
+      context: .
+      target: pandora-cc-bots
+    container_name: pandora-cc-bots
+    restart: unless-stopped
+    volumes:
+      - "./data/logs:/logs"
+    environment:
+      - LOG_DIR=/logs
+      - LOG_PRODUCTION=true
+    env_file:
+      - docker.env

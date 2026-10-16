@@ -1,0 +1,38 @@
+# Docker build instructions
+/.dockerignore
+/Dockerfile
+/docker-compose.yaml
+
+# Version management and CI
+/.git
+/.gitignore
+/*/.gitignore
+/.gitattributes
+/.github
+/.hooks
+
+# IDE configs
+/.vscode
+/.idea
+/*/.idea
+
+# Persistent data
+/data
+/logs
+/docker.env
+/docker.env.template
+/.env
+/.env.template
+
+# Dependencies, build and test data
+/node_modules
+/*/node_modules
+/dist
+/coverage
+/*/coverage
+# SonarQube
+/.sonar
+/.scannerwork
+
+# Otherwise ignored data, but required for build
+!/.hooks/postinstall.mjs
