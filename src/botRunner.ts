@@ -592,7 +592,7 @@ class IwouldnotmindGame {
 				this.statement = '';
 				break;
 			case 'waiting_on_statement':
-				this.turnTimer = Date.now() + 120_000;
+				this.turnTimer = Date.now() + 180_000;
 				break;
 			case 'waiting_on_teases':
 				this.turnTimer = Date.now() + 240_000;
