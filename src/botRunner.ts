@@ -312,6 +312,18 @@ class IwouldnotmindGame {
 							});
 						return true;
 					}),
+			})
+			.registerCommand({
+				key: 'leavegame',
+				description: 'Stop participating in the game',
+				handler: CreateBotRepositoryCommand().handler(async ({ character }): Promise<boolean> => {
+					if (!this.players.some((p) => p.id === character.id)) {
+						await this.whisper(character, 'GAME: You are not registered as a player.');
+						return true;
+					}
+					await this.unregisterPlayer(character, 'on their own request.');
+					return true;
+				}),
 			});
 	}
 
@@ -466,10 +478,14 @@ class IwouldnotmindGame {
 				// Player at turn left during a round -> the round cannot continue.
 				// The winner reveal is not interruptible, it finishes the round on its own.
 				const interruptible = this.isRoundRunning() && this.gameState !== 'waiting_on_reveal';
-				if (interruptible && !this.present.has(character.id)) {
+				if (interruptible) {
 					pending.push(this.emote('GAME: As the player at turn has left the space, please start the next round using !next.'));
 					this.setGameState('waiting_on_next_turn');
 				}
+			}
+			if (this.gameState === 'waiting_on_teases') {
+				// Not revealed yet: withdraw the submitted tease so it cannot win
+				this.teases = this.teases.filter((t) => t.player.id !== character.id);
 			}
 			if (this.players.length === 0) this.setGameState('game_not_started');
 		}
