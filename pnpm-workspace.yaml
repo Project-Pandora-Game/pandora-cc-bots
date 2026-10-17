@@ -6,13 +6,14 @@ allowBuilds:
   unrs-resolver: true
 
 allowUnusedPatches: false
-forceLegacyDeploy: true
 injectWorkspacePackages: false
 minimumReleaseAge: 2880
 minimumReleaseAgeExclude:
   - pandora-common
   - pandora-api
 nodeOptions: --no-warnings=ExperimentalWarning --experimental-vm-modules
+autoInstallPeers: false
 strictPeerDependencies: true
 updateNotifier: false
 verifyDepsBeforeRun: install
+trustLockfile: true
