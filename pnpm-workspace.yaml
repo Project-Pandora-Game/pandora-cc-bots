@@ -4,6 +4,7 @@ allowBuilds:
   pandora-api: true
   pandora-api@git+https://github.com/Project-Pandora-Game/pandora.git: true
   unrs-resolver: true
+  '@parcel/watcher': true
 
 allowUnusedPatches: false
 injectWorkspacePackages: false
