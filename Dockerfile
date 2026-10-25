@@ -1,4 +1,4 @@
-FROM docker.io/node:24.22.0-alpine AS builder
+FROM docker.io/node:24.22.1-alpine AS builder
 
 # Update and enable corepack
 RUN npm install -g corepack@latest
@@ -31,7 +31,7 @@ RUN --mount=type=cache,id=pnpm,sharing=locked,target=/pnpm/store \
 	pnpm pm deploy --filter=pandora-cc-bots --prod /app/deploy
 
 # Production image
-FROM docker.io/node:24.22.0-alpine AS pandora-cc-bots
+FROM docker.io/node:24.22.1-alpine AS pandora-cc-bots
 
 WORKDIR /app
 
